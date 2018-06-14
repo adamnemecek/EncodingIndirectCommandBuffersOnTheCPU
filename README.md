@@ -6,11 +6,27 @@ Demonstrates how to encode an indirect command buffer with the CPU or GPU, and t
 
 An indirect command buffer represents a group of commands that can be encoded with the CPU or GPU and executed repeatedly across multiple render command encoders. You use indirect command buffers to reduce CPU overhead, simplify command organization, and implement GPU-driven pipelines.
 
-In this sample, you'll learn how to define, create, encode, and execute commands in an indirect command buffer. In particular, you'll learn about the different Metal API and Metal shading language features that you use to encode indirect command buffers. The sample renders a series of 16 shapes using a vertex buffer, uniform buffer, and draw call encoded into an indirect command buffer.
+In this sample, you'll learn how to define, create, encode, and execute commands in an indirect command buffer. In particular, you'll learn about the different Metal API and Metal shading language features that you use to encode indirect command buffers. The sample renders a series of 16 shapes using two vertex buffers and a draw call encoded into an indirect command buffer.
 
 ## Getting Started
 
 The Xcode project contains schemes for running the sample on macOS or iOS, with CPU or GPU encoding enabled. The schemes define a `USE_CPU` preprocessor macro that determines whether the sample uses the CPU or GPU to encode the indirect command buffer. Metal is not supported in the iOS Simulator, so the iOS schemes require a physical device to run the sample. The default scheme is `BasicIndirectCommandBufferCPUEncoding-macOS`, which runs the sample as is on your Mac with CPU encoding enabled.
+
+Support for indirect command buffers starts with these feature sets:
+* `MTLFeatureSet_iOS_GPUFamily3_v4`
+* `MTLFeatureSet_iOS_GPUFamily4_v2`
+* `MTLFeatureSet_macOS_GPUFamily2_v1`
+
+The sample calls the `supportsFeatureSet:` method to check for support.
+
+``` objective-c
+    BOOL supportICB = NO;
+#if TARGET_IOS
+    supportICB = [_view.device supportsFeatureSet:MTLFeatureSet_iOS_GPUFamily3_v4];
+#else
+    supportICB = [_view.device supportsFeatureSet:MTLFeatureSet_macOS_GPUFamily2_v1];
+#endif
+```
 
 ## CPU Overhead and Indirect Command Buffers
 
@@ -44,8 +60,8 @@ Indirect command buffers are represented as `MTLIndirectCommandBuffer` objects. 
 
 For the indirect command buffer, `_icb`, the sample defines render commands that:
 
-1. Set the vertex buffer (using unique vertex data for each shape)
-2. Set the uniform buffer (with common transformation data for all shapes)
+1. Set a vertex buffer (using unique vertex data for each shape)
+2. Set another vertex buffer (using common transformation data for all shapes)
 3. Draw a triangle strip
 
 The sample encodes these commands differently for the CPU or the GPU. However, these commands are still encoded into both versions of the indirect command buffer.
@@ -57,15 +73,17 @@ The sample also allows `_icb` to inherit the render pipeline state from its pare
 The sample creates `_icb` from a `MTLIndirectCommandBufferDescriptor`, which defines the features and limits of an indirect command buffer.
 
 ``` objective-c
-MTLIndirectCommandBufferDescriptor* icbDescriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
+    MTLIndirectCommandBufferDescriptor* icbDescriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
 
-icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
-icbDescriptor.inheritPipelineState = TRUE;
-icbDescriptor.inheritBuffers = FALSE;
-icbDescriptor.maxVertexBufferBindCount = 2;
-icbDescriptor.maxFragmentBufferBindCount = 0;
+    icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
+#if !TARGET_IOS
+    icbDescriptor.inheritPipelineState = TRUE;
+#endif
+    icbDescriptor.inheritBuffers = FALSE;
+    icbDescriptor.maxVertexBufferBindCount = 2;
+    icbDescriptor.maxFragmentBufferBindCount = 0;
 
-_icb = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor maxCommandCount:AAPLNumShapes options:0];
+    _icb = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor maxCommandCount:AAPLNumShapes options:0];
 ```
 
 The sample specifies the types of commands, `commandTypes`, and the maximum number of commands, `maxCount`, so that Metal reserves enough space in memory for the sample to encode `_icb` successfully (with the CPU or GPU).
@@ -92,7 +110,7 @@ for (int indx = 0; indx < AAPLNumShapes; indx++)
 }
 ```
 
-The sample performs this encoding only once, before encoding any subsequent render commands. `_icb` contains a total of 16 draw calls, one for each shape to be rendered. Each draw call references the same uniform data, `_uniformBuffers`, but different vertex data, `_vertexBuffers[indx]`. Although the CPU encodes data only once, the sample issues 16 draw calls per frame.
+The sample performs this encoding only once, before encoding any subsequent render commands. `_icb` contains a total of 16 draw calls, one for each shape to be rendered. Each draw call references the same transformation data, `_uniformBuffers`, but different vertex data, `_vertexBuffers[indx]`. Although the CPU encodes data only once, the sample issues 16 draw calls per frame.
 
 ![Layout diagram that shows the commands encoded into an indirect command buffer with the CPU.](Documentation/IndirectCommandBufferCPUEncoding.png)
 
@@ -163,9 +181,46 @@ if (args.depth == (((device AAPLVertex *)args.vertex_buffers[cmd_idx])[0].positi
 }
 ```
 
-The sample performs this encoding once every 16 frames, in order to encode different data into the indirect command buffer for those frames. `_icb` contains a single draw call for the shape to be rendered. This draw call references the uniform data in `uniforms` and the vertex data in `vertex_buffers[cmd_idx]`. Although the GPU encodes data multiple times, the sample issues only one draw call per frame.
+The sample performs this encoding once every 16 frames, in order to encode different data into the indirect command buffer for those frames. `_icb` contains a single draw call for the shape to be rendered. This draw call references the transformation data in `uniforms` and the vertex data in `vertex_buffers[cmd_idx]`. Although the GPU encodes data multiple times, the sample issues only one draw call per frame.
 
 ![Layout diagram that shows the commands encoded into an indirect command buffer with the GPU.](Documentation/IndirectCommandBufferGPUEncoding.png)
+
+## Optimize an Indirect Command Buffer
+
+Because you set a buffer and render pipeline state for each draw command, some of this state can be redundant. After encoding commands, the sample calls the `optimizeIndirectCommandBuffer:withRange:` method to encode a blit operation that optimizes the contents of `_icb`. When Metal executes this operation, it attempts to remove redundant state within a specific range of the indirect command buffer. This optimization reduces the associated execution costs of the redundant state.
+
+- Note: The `reset()` command makes a draw a no-op, which adds some GPU overhead to the indirect command buffer. The optimization operation also reduces this additional cost.
+
+If the sample encodes `_icb` with the CPU, it then encodes the optimization operation in a separate command buffer.
+
+``` objective-c
+id <MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+commandBuffer.label = @"Indirect Command Buffer Optimization";
+
+id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+blitEncoder.label = @"Indirect Command Buffer Optimization Encoding";
+
+[blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
+[blitEncoder endEncoding];
+
+[commandBuffer commit];
+[commandBuffer waitUntilCompleted];
+```
+
+If the sample encodes `_icb` with the GPU, it also encodes the optimization operation in the same command buffer.
+
+``` objective-c
+id<MTLBlitCommandEncoder> blitEncoder = [commandComputeBuffer blitCommandEncoder];
+blitEncoder.label = @"Indirect Command Buffer Optimization";
+
+[blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
+[blitEncoder endEncoding];
+
+[commandComputeBuffer commit];
+[commandComputeBuffer waitUntilCompleted];
+```
+
+- Note: The `optimizeIndirectCommandBuffer:withRange:` command doesn't remove all redundant state, but it does remove a significant portion within hardware-dependent windows to the command buffer. This implementation achieves adequate parallelization for the optimization operation while significantly reducing redundant state.
 
 ## Execute an Indirect Command Buffer
 
@@ -175,11 +230,16 @@ The sample calls the `executeCommandsInBuffer:withRange:` method to execute the 
 [renderEncoder executeCommandsInBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
 ```
 
+- Note: If an indirect command buffer is optimized, you can't call the `executeCommandsInBuffer:withRange:` method with a range that starts within the optimized region. You should specify a range that starts at the beginning of the optimized region and finishes at the end or within the optimized region.
+
 Similar to the arguments in an argument buffer, the sample calls the `useResource:usage:` method to indicate that the GPU can access the resources within an indirect command buffer.
 
 ``` objective-c
 [renderEncoder useResource:_uniformBuffers usage:MTLResourceUsageRead];
-[renderEncoder useResource:_vertexBuffer[_currentFrameIndex] usage:MTLResourceUsageRead];
+for (int indx = 0; indx < AAPLNumShapes; indx++)
+{
+    [renderEncoder useResource:_vertexBuffer[indx] usage:MTLResourceUsageRead];
+}
 ```
 
 The sample continues to execute `_icb` multiple times in subsequent render command encoders, as long as `_icb` contains valid commands to be executed.

@@ -33,7 +33,6 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     id <MTLBuffer> _vertexBuffer[AAPLNumShapes];
     id <MTLFunction> _kernelFunction;
     id <MTLBuffer> _kernelShaderArgumentBuffer;
-    id <MTLSamplerState> _sampler;
 
     // Current buffer to fill with dynamic uniform data and set for the current frame
     uint _currentBufferIndex;
@@ -120,15 +119,6 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         NSLog(@"Failed to created pipeline state, error %@", error);
     }
 
-    MTLSamplerDescriptor *samplerDesc = [MTLSamplerDescriptor new];
-    samplerDesc.minFilter = MTLSamplerMinMagFilterLinear;
-    samplerDesc.magFilter = MTLSamplerMinMagFilterLinear;
-    samplerDesc.mipFilter = MTLSamplerMipFilterNotMipmapped;
-    samplerDesc.normalizedCoordinates = YES;
-    samplerDesc.supportArgumentBuffers = YES;
-
-    _sampler = [_device newSamplerStateWithDescriptor:samplerDesc];
-
     MTLDepthStencilDescriptor *depthStateDesc = [[MTLDepthStencilDescriptor alloc] init];
     depthStateDesc.depthCompareFunction = MTLCompareFunctionEqual;
     depthStateDesc.depthWriteEnabled = YES;
@@ -190,7 +180,9 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     MTLIndirectCommandBufferDescriptor* icbDescriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
 
     icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
+#if !TARGET_IOS
     icbDescriptor.inheritPipelineState = TRUE;
+#endif
     icbDescriptor.inheritBuffers = FALSE;
     icbDescriptor.maxVertexBufferBindCount = 2;
     icbDescriptor.maxFragmentBufferBindCount = 0;
@@ -213,6 +205,18 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
               instanceCount:1
                baseInstance:0];
     }
+    
+    id <MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+    commandBuffer.label = @"Indirect Command Buffer Optimization";
+    
+    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+    blitEncoder.label = @"Indirect Command Buffer Optimization Encoding";
+    
+    [blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
+    [blitEncoder endEncoding];
+    
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
 #endif
 }
 
@@ -273,6 +277,13 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
                        threadsPerThreadgroup:_threadgroupSize];
 
         [computeEncoder endEncoding];
+        
+        id<MTLBlitCommandEncoder> blitEncoder = [commandComputeBuffer blitCommandEncoder];
+        blitEncoder.label = @"Indirect Command Buffer Optimization";
+        
+        [blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
+        [blitEncoder endEncoding];
+        
         [commandComputeBuffer commit];
         [commandComputeBuffer waitUntilCompleted];
 #endif
@@ -302,13 +313,6 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     // If we've gotten a renderPassDescriptor we can render to the drawable, otherwise we'll skip
     //   any rendering this frame because we have no drawable to draw to
     if(renderPassDescriptor != nil) {
-        MTLTextureDescriptor * depthBufferDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:view.depthStencilPixelFormat
-                                                                                                          width:_currentWidth
-                                                                                                         height:_currentHeight
-                                                                                                      mipmapped:NO];
-        depthBufferDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        depthBufferDescriptor.storageMode = MTLStorageModePrivate;
-        renderPassDescriptor.depthAttachment.texture = [_device newTextureWithDescriptor:depthBufferDescriptor];
         renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
         renderPassDescriptor.depthAttachment.clearDepth = _currentDepth;
 
@@ -327,7 +331,10 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         [renderEncoder setRenderPipelineState:_pipelineState];
         [renderEncoder setDepthStencilState:_depthState];
         [renderEncoder useResource:_uniformBuffers usage:MTLResourceUsageRead];
-        [renderEncoder useResource:_vertexBuffer[_currentFrameIndex] usage:MTLResourceUsageRead];
+        for (int indx = 0; indx < AAPLNumShapes; indx++)
+        {
+            [renderEncoder useResource:_vertexBuffer[indx] usage:MTLResourceUsageRead];
+        }
 
         // Draw everything in the ICB.
         // CPU encoding: all commands are encoded with a draw, but only 1 draw can pass depth test.

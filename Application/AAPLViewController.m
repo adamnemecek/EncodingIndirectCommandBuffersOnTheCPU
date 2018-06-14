@@ -29,6 +29,18 @@ Implementation of our cross-platform view controller
         return;
     }
 
+    BOOL supportICB = NO;
+#if TARGET_IOS
+    supportICB = [_view.device supportsFeatureSet:MTLFeatureSet_iOS_GPUFamily3_v4];
+#else
+    supportICB = [_view.device supportsFeatureSet:MTLFeatureSet_macOS_GPUFamily2_v1];
+#endif
+    if (!supportICB)
+    {
+        NSLog(@"Indirect Command Buffer is not supported on this GPU family or OS version");
+        return;
+    }
+    
     _renderer = [[AAPLRenderer alloc] initWithMetalKitView:_view];
 
     if(!_renderer)
