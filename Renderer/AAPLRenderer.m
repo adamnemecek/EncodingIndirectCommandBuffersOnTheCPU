@@ -156,7 +156,10 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     assert(numSides >= 3);
 
     uint32_t bufferSize = sizeof(AAPLVertex)*numSides;
-    AAPLVertex *meshVertices = malloc(bufferSize);
+
+    id<MTLBuffer> metalBuffer = [_device newBufferWithLength:bufferSize options:0];
+
+    AAPLVertex *meshVertices = (AAPLVertex *)metalBuffer.contents;
 
     const float angle = 2*M_PI/(float)numSides;
     for(int vtx = 0;vtx < numSides; vtx++)
@@ -167,9 +170,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         meshVertices[vtx].position = position;
         meshVertices[vtx].texcoord = (pos + 1.0) / 2.0;
     }
-
-    id<MTLBuffer> metalBuffer = [_device newBufferWithBytes:meshVertices length:bufferSize options:0];
-
+    
     return metalBuffer;
 }
 
