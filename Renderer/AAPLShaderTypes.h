@@ -9,57 +9,65 @@ Header containing types and enum constants shared between Metal shaders and C/Ob
 
 #include <simd/simd.h>
 
-#define AAPLNumShapes 16
+// Constants shared between shader and C code
+#define AAPLNumObjects    15
+
+#define AAPLGridWidth     5
+#define AAPLGridHeight    ((AAPLNumObjects+AAPLGridWidth-1)/AAPLGridWidth)
+
+// Scale of each object when drawn
+#define AAPLViewScale    0.25
+
+// Because the objects are centered at origin, the scale appliced
+#define AAPLObjectSize    2.0
+
+// Distance between each object
+#define AAPLObjecDistance 2.1
+
+
+
+
 
 // Structure defining the layout of each vertex.  Shared between C code filling in the vertex data
 //   and Metal vertex shader consuming the vertices
 typedef struct
 {
-    vector_float3 position;
+    packed_float2 position;
     packed_float2 texcoord;
 } AAPLVertex;
 
-// Buffer index values shared between shader and C code to ensure Metal shader buffer inputs match
-//   Metal API buffer set calls
-typedef enum AAPLBufferIndex
+// Structure defining the layout of variable changing once (or less) per frame
+typedef struct AAPLFrameState
 {
-    AAPLBufferIndexVertices = 0,
-    AAPLBufferIndexUniforms = 1,
-} AAPLBufferIndex;
+    vector_float2 aspectScale;
+} AAPLFrameState;
 
-// Texture index values shared between shader and C code to ensure Metal shader texture indices
-//   match indices of Metal API texture set calls
-typedef enum AAPLTextureIndex
+// Structure defining parameters for each rendered object
+typedef struct AAPLObjectPerameters
 {
-    AAPLTextureIndexBaseColor = 0,
-} AAPLTextureIndex;
+    packed_float2 position;
+} AAPLObjectPerameters;
 
-// Structure shared between shader and C code to ensure the layout of uniform data accessed in
-// Metal shaders matches the layout of uniform data set in C code
-typedef struct
+// Buffer index values shared between the vertex shader and C code
+typedef enum AAPLVertexBufferIndex
 {
-    // Per Frame Uniforms
-    vector_float3 cameraPos;
+    AAPLVertexBufferIndexVertices,
+    AAPLVertexBufferIndexObjectParams,
+    AAPLVertexBufferIndexFrameState
+} AAPLVertexBufferIndex;
 
-    // Per Mesh Uniforms
-    matrix_float4x4 modelMatrix;
-    matrix_float4x4 modelViewProjectionMatrix;
-    matrix_float3x3 normalMatrix;
-
-} AAPLUniforms;
+// Buffer index values shared between the compute kernel and C code
+typedef enum AAPLKernelBufferIndex
+{
+    AAPLKernelBufferIndexFrameState,
+    AAPLKernelBufferIndexObjectParams,
+    AAPLKernelBufferIndexArguments
+} AAPLKernelBufferIndex;
 
 typedef enum AAPLArgumentBufferBufferID
 {
-    AAPLArgumentBufferIDICB,
-    AAPLArgumentBufferIDUniformBuffer,
-    AAPLArgumentBufferIDDepth,
-    AAPLArgumentBufferIDVertexBuffer,
-    AAPLArgumentBufferIDVertexNumBuffer = 50
+    AAPLArgumentBufferIDCommandBuffer,
+    AAPLArgumentBufferIDObjectMesh
 } AAPLArgumentBufferBufferID;
-
-typedef enum AAPLVertexBufferIndex
-{
-    AAPLVertexBufferIndexArgument
-}AAPLVertexBufferIndex;
 
 #endif /* ShaderTypes_h */

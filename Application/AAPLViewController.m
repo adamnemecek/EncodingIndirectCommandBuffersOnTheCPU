@@ -37,7 +37,7 @@ Implementation of our cross-platform view controller
 #endif
     if (!supportICB)
     {
-        NSLog(@"Indirect Command Buffer is not supported on this GPU family or OS version");
+        NSLog(@"Indirect Command Buffers are not supported on this GPU family or OS version");
         return;
     }
     

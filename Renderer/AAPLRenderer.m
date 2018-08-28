@@ -8,10 +8,12 @@ Implementation of renderer class which performs Metal setup and per frame render
 @import MetalKit;
 
 #import "AAPLRenderer.h"
-#import "AAPLMathUtilities.h"
 
 // Include header shared between C code here, which executes Metal API commands, and .metal files
 #import "AAPLShaderTypes.h"
+
+#define USE_HEAP 1
+#define MOVE_GRID 1
 
 // The max number of command buffers in flight
 static const NSUInteger AAPLMaxBuffersInFlight = 3;
@@ -20,36 +22,38 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 @implementation AAPLRenderer
 {
     dispatch_semaphore_t _inFlightSemaphore;
-    id <MTLDevice> _device;
-    id <MTLCommandQueue> _commandQueue;
 
-    // Metal objects
-    id <MTLBuffer> _uniformBuffers;
-    id <MTLRenderPipelineState> _pipelineState;
-    id <MTLComputePipelineState> _computePipeline;
-    id <MTLDepthStencilState> _depthState;
-    id <MTLTexture> _baseColorMap;
-    id <MTLIndirectCommandBuffer> _icb;
-    id <MTLBuffer> _vertexBuffer[AAPLNumShapes];
-    id <MTLFunction> _kernelFunction;
-    id <MTLBuffer> _kernelShaderArgumentBuffer;
+    id<MTLDevice> _device;
 
-    // Current buffer to fill with dynamic uniform data and set for the current frame
-    uint _currentBufferIndex;
-    uint _currentFrameIndex;
-    uint _currentFrameID;
+    id<MTLCommandQueue> _commandQueue;
 
-    // Projection matrix calculated as a function of view size
-    matrix_float4x4 _projectionMatrix;
+    // Array of Metal buffers storing vertex data for each rendered object
+    id<MTLBuffer> _vertexBuffer[AAPLNumObjects];
 
-    MTLSize _threadgroupSize;
-    MTLSize _threadgroupCount;
+    // The Metal buffer storing per object parameters for each rendered object
+    id<MTLBuffer> _objectParameters;
 
-    // Current rotation of our object in radians
-    float _rotation;
-    float _currentWidth;
-    float _currentHeight;
-    float _currentDepth;
+    // The Metal buffers storing per frame uniform data
+    id<MTLBuffer> _frameStateBuffer[AAPLMaxBuffersInFlight];
+
+    // Render pipeline executinng indirect command buffer
+    id<MTLRenderPipelineState> _renderPipelineState;
+
+    // When using an indirect command buffer encoded by the CPU, buffer updated by the CPU must be
+    // blit into a seperate buffer that is set in the indirect command buffer.
+    id<MTLBuffer> _indirectFrameStateBuffer;
+
+    // Index into per frame uniforms to use for the current frame
+    NSUInteger _inFlightIndex;
+
+    // Number of frames rendered
+    NSUInteger _frameNumber;
+
+    // The indirect command buffer encoded and executed
+    id<MTLIndirectCommandBuffer> _indirectCommandBuffer;
+
+    vector_float2 _aspectScale;
+
 }
 
 /// Initialize with the MetalKit view from which we'll obtain our Metal device.  We'll also use this
@@ -57,298 +61,325 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 - (nonnull instancetype)initWithMetalKitView:(nonnull MTKView *)mtkView
 {
     self = [super init];
+
     if(self)
     {
+        mtkView.clearColor = MTLClearColorMake(0.0, 0.0, 0.5, 1.0f);
+        mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+
         _device = mtkView.device;
+
         _inFlightSemaphore = dispatch_semaphore_create(AAPLMaxBuffersInFlight);
-        [self loadMetal:mtkView];
-        [self loadAssets];
+
+        // Create the command queue
+        _commandQueue = [_device newCommandQueue];
+
+        // Load all the shader files with a metal file extension in the project
+        id <MTLLibrary> defaultLibrary = [_device newDefaultLibrary];
+
+        // Load the vertex function into the library
+        id <MTLFunction> vertexFunction = [defaultLibrary newFunctionWithName:@"vertexShader"];
+
+        // Load the fragment function into the library
+        id <MTLFunction> fragmentFunction = [defaultLibrary newFunctionWithName:@"fragmentShader"];
+
+        mtkView.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
+        mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+        mtkView.sampleCount = 1;
+
+        // Create a reusable pipeline state
+        MTLRenderPipelineDescriptor *pipelineStateDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        pipelineStateDescriptor.label = @"MyPipeline";
+        pipelineStateDescriptor.sampleCount = mtkView.sampleCount;
+        pipelineStateDescriptor.vertexFunction = vertexFunction;
+        pipelineStateDescriptor.fragmentFunction = fragmentFunction;
+        pipelineStateDescriptor.colorAttachments[0].pixelFormat = mtkView.colorPixelFormat;
+        pipelineStateDescriptor.depthAttachmentPixelFormat = mtkView.depthStencilPixelFormat;
+        // Needed for this pipeline state to be used in indirect command buffers.
+        pipelineStateDescriptor.supportIndirectCommandBuffers = TRUE;
+
+        NSError *error = nil;
+        _renderPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
+        if (!_renderPipelineState)
+        {
+            NSLog(@"Failed to created pipeline state, error %@", error);
+        }
+
+        for(int objectIdx = 0; objectIdx < AAPLNumObjects; objectIdx++)
+        {
+            // Choose parameters to generate a mesh for this object so that each mesh is unique
+            // and looks diffent than the mesh it's next to in the grid drawn
+            uint32_t numTeeth = (objectIdx < 8) ? objectIdx + 3 : objectIdx * 3;
+
+            // Create a vertex buffer, and initialize it with a unique 2D gear mesh
+            _vertexBuffer[objectIdx] = [self newGearMeshWithNumTeeth:numTeeth];
+
+            _vertexBuffer[objectIdx].label = [[NSString alloc] initWithFormat:@"Object %i Buffer", objectIdx];
+        }
+
+        /// Create and fill array containing parameters for each object
+
+        NSUInteger objectParameterArraySize = AAPLNumObjects * sizeof(AAPLObjectPerameters);
+
+        _objectParameters = [_device newBufferWithLength:objectParameterArraySize options:0];
+
+        _objectParameters.label = @"Object Parameters Array";
+
+        AAPLObjectPerameters *params = _objectParameters.contents;
+
+        static const vector_float2 gridDimensions = { AAPLGridWidth, AAPLGridHeight };
+
+        const vector_float2 offset = (AAPLObjecDistance / 2.0) * (gridDimensions-1);
+
+        for(int objectIdx = 0; objectIdx < AAPLNumObjects; objectIdx++)
+        {
+            // Calculate position of each object such that each occupies a space in a grid
+            vector_float2 gridPos = (vector_float2){objectIdx % AAPLGridWidth, objectIdx / AAPLGridWidth};
+            vector_float2 position = -offset + gridPos * AAPLObjecDistance;
+
+            // Write the position of each object to the object parameter buffer
+            params[objectIdx].position = position;
+        }
+
+        for(int i = 0; i < AAPLMaxBuffersInFlight; i++)
+        {
+            _frameStateBuffer[i] = [_device newBufferWithLength:sizeof(AAPLFrameState)
+                                                                  options:MTLResourceStorageModeShared];
+
+            _frameStateBuffer[i].label = [NSString stringWithFormat:@"frame state buffer %d", i];
+        }
+
+        // When encoding commands with the CPU, the app sets this indirect frame state buffer
+        // dynamically in the indirect command buffer.   Each frame data will be blit from the
+        // _frameStateBuffer that has just been updated by the CPU to this buffer.  This allow
+        // a synchronous update of values set by the CPU.
+        _indirectFrameStateBuffer = [_device newBufferWithLength:sizeof(AAPLFrameState)
+                                                         options:MTLResourceStorageModePrivate];
+
+        _indirectFrameStateBuffer.label = @"Indirect Frame State Buffer";
+
+        MTLIndirectCommandBufferDescriptor* icbDescriptor = [MTLIndirectCommandBufferDescriptor new];
+
+        // Indicate that the only draw commands will be standard (non-indexed) draw commands.
+        icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
+
+        // Indicate that buffers will be set for each command IN the indirect command buffer.
+        icbDescriptor.inheritBuffers = NO;
+
+        // Indicate that a max of 3 buffers will be set for each command.
+        icbDescriptor.maxVertexBufferBindCount = 3;
+        icbDescriptor.maxFragmentBufferBindCount = 0;
+
+        _indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
+                                                                 maxCommandCount:AAPLNumObjects
+                                                                         options:0];
+
+        //  Encode a draw command for each object drawn in the indirect command buffer.
+        for (int objIndex = 0; objIndex < AAPLNumObjects; objIndex++)
+        {
+            id<MTLIndirectRenderCommand> ICBCommand =
+                [_indirectCommandBuffer indirectRenderCommandAtIndex:objIndex];
+
+            [ICBCommand setVertexBuffer:_vertexBuffer[objIndex]
+                                 offset:0
+                                atIndex:AAPLVertexBufferIndexVertices];
+
+            [ICBCommand setVertexBuffer:_indirectFrameStateBuffer
+                                 offset:0
+                                atIndex:AAPLVertexBufferIndexFrameState];
+
+            [ICBCommand setVertexBuffer:_objectParameters
+                                 offset:0
+                                atIndex:AAPLVertexBufferIndexObjectParams];
+
+            const NSUInteger vertexCount = _vertexBuffer[objIndex].length/sizeof(AAPLVertex);
+
+            [ICBCommand drawPrimitives:MTLPrimitiveTypeTriangle
+                           vertexStart:0
+                           vertexCount:vertexCount
+                         instanceCount:1
+                          baseInstance:objIndex];
+        }
     }
 
     return self;
 }
 
-/// Create our metal render state objects including our shaders and render state pipeline objects
-- (void) loadMetal:(nonnull MTKView *)mtkView
+/// Create a Metal buffer containing a 2D "gear" mesh
+- (id<MTLBuffer>)newGearMeshWithNumTeeth:(uint32_t)numTeeth
 {
-    // Create and load our basic Metal state objects
+    assert(numTeeth >= 3);
 
-    // Load all the shader files with a metal file extension in the project
-    id <MTLLibrary> defaultLibrary = [_device newDefaultLibrary];
+    static const float innerRatio = 0.8;
+    static const float toothWidth = 0.25;
+    static const float toothSlope = 0.2;
 
-    // Load the vertex function into the library
-    id <MTLFunction> vertexFunction = [defaultLibrary newFunctionWithName:@"vertexShader"];
-
-    // Load the fragment function into the library
-    id <MTLFunction> fragmentFunction = [defaultLibrary newFunctionWithName:@"fragmentShader"];
-
-    _uniformBuffers = [_device newBufferWithLength:sizeof(AAPLUniforms)
-                                           options:MTLResourceStorageModeShared];
-
-    AAPLUniforms * uniforms = (AAPLUniforms*)_uniformBuffers.contents;
-    const matrix_float4x4 modelMatrix = matrix4x4_scale(3, 3, 1);
-
-    const vector_float3 cameraTranslation = {0.0, 0.0, -8.0};
-    const matrix_float4x4 viewMatrix = matrix4x4_translation (-cameraTranslation);
-    _projectionMatrix = matrix_perspective_left_hand(65.0f * (M_PI / 180.0f), mtkView.drawableSize.width / (float)mtkView.drawableSize.height, 0.1f, 100.0f);
-    const matrix_float4x4 viewProjectionMatrix  = matrix_multiply (_projectionMatrix, viewMatrix);
-
-    uniforms->cameraPos = cameraTranslation;
-    uniforms->modelMatrix = modelMatrix;
-    uniforms->modelViewProjectionMatrix = matrix_multiply (viewProjectionMatrix, modelMatrix);
-
-    mtkView.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
-    mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
-    mtkView.sampleCount = 1;
-
-    // Create a reusable pipeline state
-    MTLRenderPipelineDescriptor *pipelineStateDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
-    pipelineStateDescriptor.label = @"MyPipeline";
-    pipelineStateDescriptor.sampleCount = mtkView.sampleCount;
-    pipelineStateDescriptor.vertexFunction = vertexFunction;
-    pipelineStateDescriptor.fragmentFunction = fragmentFunction;
-    pipelineStateDescriptor.colorAttachments[0].pixelFormat = mtkView.colorPixelFormat;
-    pipelineStateDescriptor.depthAttachmentPixelFormat = mtkView.depthStencilPixelFormat;
-    // Needed for this pipeline state to be used in indirect command buffers.
-    pipelineStateDescriptor.supportIndirectCommandBuffers = TRUE;
-
-    NSError *error = nil;
-    _pipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
-    if (!_pipelineState)
-    {
-        NSLog(@"Failed to created pipeline state, error %@", error);
-    }
-
-    MTLDepthStencilDescriptor *depthStateDesc = [[MTLDepthStencilDescriptor alloc] init];
-    depthStateDesc.depthCompareFunction = MTLCompareFunctionEqual;
-    depthStateDesc.depthWriteEnabled = YES;
-    _depthState = [_device newDepthStencilStateWithDescriptor:depthStateDesc];
-
-    // Create kernel function for GPU encoding. This is always done no matter if GPU encoding is
-    // enabled just for simplicity.
-    _kernelFunction = [defaultLibrary newFunctionWithName:@"kernelShader"];
-
-    _computePipeline = [_device newComputePipelineStateWithFunction:_kernelFunction
-                                                              error:&error];
-    if (!_computePipeline)
-    {
-        NSLog(@"Failed to created compute pipeline state, error %@", error);
-    }
-
-    _threadgroupSize = MTLSizeMake(AAPLNumShapes, 1, 1);
-    _threadgroupCount = MTLSizeMake(1, 1, 1);
-    _threadgroupCount.width  = AAPLNumShapes;
-    _threadgroupCount.height = 1;
-
-    _currentDepth = 100.0f;
-
-    for (int indx = 0; indx < AAPLNumShapes; indx++)
-    {
-        _vertexBuffer[indx] = [self createCircleMeshWithTriangleStrip:(indx+3)];
-    }
-
-    // Create the command queue
-    _commandQueue = [_device newCommandQueue];
-}
-
-- (id<MTLBuffer>)createCircleMeshWithTriangleStrip:(uint32_t)numSides
-{
-    assert(numSides >= 3);
-
-    uint32_t bufferSize = sizeof(AAPLVertex)*numSides;
-
+    // 1 triangle for each tooth and 1 more to fill the inside of the gear equals 6 vertices for each tooth
+    uint32_t numVertices = numTeeth * 12;
+    uint32_t bufferSize = sizeof(AAPLVertex) * numVertices;
     id<MTLBuffer> metalBuffer = [_device newBufferWithLength:bufferSize options:0];
 
     AAPLVertex *meshVertices = (AAPLVertex *)metalBuffer.contents;
 
-    const float angle = 2*M_PI/(float)numSides;
-    for(int vtx = 0;vtx < numSides; vtx++)
+    const double angle = 2.0*M_PI/(double)numTeeth;
+    static const packed_float2 origin = (packed_float2){0.0, 0.0};
+    int vtx = 0;
+
+    // Build triangles for teeth of gear
+    for(int tooth = 0; tooth < numTeeth; tooth++)
     {
-        int point = (vtx%2) ? (vtx+1)/2 : -vtx/2;
-        vector_float3 position = {sin(point*angle), cos(point*angle), (numSides - 3) * 1.0f};
-        vector_float2 pos = {sin(point*angle), cos(point*angle)};
-        meshVertices[vtx].position = position;
-        meshVertices[vtx].texcoord = (pos + 1.0) / 2.0;
+        // Create Vertex for 1st crevice between teeth
+
+        const float toothStartAngle = tooth * angle;
+        const float toothTip1Angle  = (tooth+toothSlope) * angle;
+        const float toothTip2Angle  = (tooth+toothSlope+toothWidth) * angle;;
+        const float toothEndAngle   = (tooth+2*toothSlope+toothWidth) * angle;
+        const float nextToothAngle  = (tooth+1.0) * angle;
+        const packed_float2 groove1 = { sin(toothStartAngle)*innerRatio, cos(toothStartAngle)*innerRatio };
+        const packed_float2 tip1 = { sin(toothTip1Angle), cos(toothTip1Angle) };
+        const packed_float2 tip2 = { sin(toothTip2Angle), cos(toothTip2Angle) };
+        const packed_float2 groove2 = { sin(toothEndAngle)*innerRatio, cos(toothEndAngle)*innerRatio };
+        const packed_float2 nextGroove = { sin(nextToothAngle)*innerRatio, cos(nextToothAngle)*innerRatio };
+
+        // Right top triangle of tooth
+        meshVertices[vtx].position = groove1;
+        meshVertices[vtx].texcoord = (groove1 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = tip1;
+        meshVertices[vtx].texcoord = (tip1 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = tip2;
+        meshVertices[vtx].texcoord = (tip2 + 1.0) / 2.0;
+        vtx++;
+
+        // Left bottom triangle of tooth
+        meshVertices[vtx].position = groove1;
+        meshVertices[vtx].texcoord = (groove1 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = tip2;
+        meshVertices[vtx].texcoord = (tip2 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = groove2;
+        meshVertices[vtx].texcoord = (groove2 + 1.0) / 2.0;
+        vtx++;
+
+        // Slice inside tooth
+        meshVertices[vtx].position = origin;
+        meshVertices[vtx].texcoord = (origin + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = groove1;
+        meshVertices[vtx].texcoord = (groove1 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = groove2;
+        meshVertices[vtx].texcoord = (groove2 + 1.0) / 2.0;
+        vtx++;
+
+        // Slice inside groove
+        meshVertices[vtx].position = origin;
+        meshVertices[vtx].texcoord = (origin + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = groove2;
+        meshVertices[vtx].texcoord = (groove2 + 1.0) / 2.0;
+        vtx++;
+
+        meshVertices[vtx].position = nextGroove;
+        meshVertices[vtx].texcoord = (nextGroove + 1.0) / 2.0;
+        vtx++;
     }
-    
+
     return metalBuffer;
 }
 
-/// Create and load our assets into Metal objects including meshes and textures
-- (void) loadAssets
+
+/// Updates non-Metal state for the current frame including updates to uniforms used in shaders
+- (void)updateState
 {
-    // Build indirect command buffers
-    MTLIndirectCommandBufferDescriptor* icbDescriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
+    _frameNumber++;
 
-    icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
-#if !TARGET_IOS
-    icbDescriptor.inheritPipelineState = TRUE;
-#endif
-    icbDescriptor.inheritBuffers = FALSE;
-    icbDescriptor.maxVertexBufferBindCount = 2;
-    icbDescriptor.maxFragmentBufferBindCount = 0;
+    _inFlightIndex = _frameNumber % AAPLMaxBuffersInFlight;
 
-    _icb = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor maxCommandCount:AAPLNumShapes options:0];
+    AAPLFrameState * frameState = _frameStateBuffer[_inFlightIndex].contents;
 
-#if USE_CPU
-    for (int indx = 0; indx < AAPLNumShapes; indx++)
-    {
-        NSUInteger vertexCount = _vertexBuffer[indx].length/sizeof(AAPLVertex);
-
-        id<MTLIndirectRenderCommand> cmd = [_icb indirectRenderCommandAtIndex:indx];
-
-        [cmd setVertexBuffer:_vertexBuffer[indx] offset:0 atIndex:AAPLBufferIndexVertices];
-        [cmd setVertexBuffer:_uniformBuffers offset:0 atIndex:AAPLBufferIndexUniforms];
-
-        [cmd drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                vertexStart:0
-                vertexCount:vertexCount
-              instanceCount:1
-               baseInstance:0];
-    }
-    
-    id <MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
-    commandBuffer.label = @"Indirect Command Buffer Optimization";
-    
-    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-    blitEncoder.label = @"Indirect Command Buffer Optimization Encoding";
-    
-    [blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
-    [blitEncoder endEncoding];
-    
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
-#endif
+    frameState->aspectScale = _aspectScale;
 }
 
 /// Called whenever view changes orientation or layout is changed
 - (void) mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
 {
-    /// React to resize of our draw rect.  In particular update our perspective matrix
-    // Update the aspect ratio and projection matrix since the view orientation or size has changed
-    float aspect = size.width / (float)size.height;
-    _currentWidth = size.width;
-    _currentHeight = size.height;
-    _projectionMatrix = matrix_perspective_left_hand(65.0f * (M_PI / 180.0f), aspect, 0.1f, 100.0);
+    // Calculate scale for quads so that they are always square when working with the default
+    // viewport and sending down clip space corrdinates.
+
+    _aspectScale.x = (float)size.height / (float)size.width;
+    _aspectScale.y = 1.0;
 }
 
-// Called whenever the view needs to render
+/// Called whenever the view needs to render
 - (void) drawInMTKView:(nonnull MTKView *)view
 {
-    float targetDepth = (_currentFrameIndex * 1.0f) / AAPLNumShapes;
-    if (targetDepth != _currentDepth)
-    {
-        _currentDepth = targetDepth;
-
-#if !USE_CPU
-        id <MTLArgumentEncoder> argumentEncoder = [_kernelFunction newArgumentEncoderWithBufferIndex:AAPLVertexBufferIndexArgument];
-        NSUInteger argumentBufferLength = argumentEncoder.encodedLength;
-
-        _kernelShaderArgumentBuffer = [_device newBufferWithLength:argumentBufferLength options:0];
-        _kernelShaderArgumentBuffer.label = @"Argument Buffer for ICB";
-
-        [argumentEncoder setArgumentBuffer:_kernelShaderArgumentBuffer offset:0];
-        [argumentEncoder setIndirectCommandBuffer:_icb atIndex:AAPLArgumentBufferIDICB];
-        [argumentEncoder setBuffer:_uniformBuffers offset:0 atIndex:AAPLArgumentBufferIDUniformBuffer];
-        for (int indx = 0; indx < AAPLNumShapes; indx++)
-        {
-            [argumentEncoder setBuffer:_vertexBuffer[indx] offset:0 atIndex:AAPLArgumentBufferIDVertexBuffer + indx];
-            uint8_t *vertexNumAddr = [argumentEncoder constantDataAtIndex:AAPLArgumentBufferIDVertexNumBuffer + indx];
-            *vertexNumAddr = (uint8_t)(_vertexBuffer[indx].length / sizeof(AAPLVertex));
-        }
-        float *depthValAddr = [argumentEncoder constantDataAtIndex:AAPLArgumentBufferIDDepth];
-        *depthValAddr = _currentDepth;
-
-        id <MTLCommandBuffer> commandComputeBuffer = [_commandQueue commandBuffer];
-        commandComputeBuffer.label = @"Indirect Command Buffer Encoding";
-        id<MTLComputeCommandEncoder> computeEncoder = [commandComputeBuffer computeCommandEncoder];
-        computeEncoder.label = @"Indirect Command Buffer GPU Encoding";
-
-        [computeEncoder setComputePipelineState:_computePipeline];
-        [computeEncoder useResource:_icb usage:MTLResourceUsageWrite];
-        for (int indx = 0; indx < AAPLNumShapes; indx++)
-        {
-            [computeEncoder useResource:_vertexBuffer[indx] usage:MTLResourceUsageRead];
-        }
-        [computeEncoder useResource:_uniformBuffers usage:MTLResourceUsageRead];
-        [computeEncoder setBuffer:_kernelShaderArgumentBuffer
-                           offset:0
-                          atIndex:0];
-        [computeEncoder dispatchThreadgroups:_threadgroupCount
-                       threadsPerThreadgroup:_threadgroupSize];
-
-        [computeEncoder endEncoding];
-        
-        id<MTLBlitCommandEncoder> blitEncoder = [commandComputeBuffer blitCommandEncoder];
-        blitEncoder.label = @"Indirect Command Buffer Optimization";
-        
-        [blitEncoder optimizeIndirectCommandBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
-        [blitEncoder endEncoding];
-        
-        [commandComputeBuffer commit];
-        [commandComputeBuffer waitUntilCompleted];
-#endif
-
-    }
     // Wait to ensure only AAPLMaxBuffersInFlight are getting processed by any stage in the Metal
     //   pipeline (App, Metal, Drivers, GPU, etc)
     dispatch_semaphore_wait(_inFlightSemaphore, DISPATCH_TIME_FOREVER);
 
+    [self updateState];
+
     // Create a new command buffer for each render pass to the current drawable
     id <MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
-    commandBuffer.label = @"MyCommand";
+    commandBuffer.label = @"Frame Command Buffer";
 
     // Add completion hander which signals _inFlightSemaphore when Metal and the GPU has fully
-    //   finished processing the commands we're encoding this frame.  This indicates when the
-    //   dynamic buffers, that we're writing to this frame, will no longer be needed by Metal
-    //   and the GPU, meaning we can change the buffer contents without corrupting the rendering.
+    // finished processing the commands encoded this frame.  This indicates when the dynamic
+    // _frameStateBuffer, that written by the CPU in this frame, has been read by Metal and the GPU
+    // meaning we can change the buffer contents without corrupting the rendering
     __block dispatch_semaphore_t block_sema = _inFlightSemaphore;
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer)
      {
          dispatch_semaphore_signal(block_sema);
      }];
 
+    /// Encode blit commands to update the buffer holding the frame state.
+    id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+
+    [blitEncoder copyFromBuffer:_frameStateBuffer[_inFlightIndex] sourceOffset:0
+                       toBuffer:_indirectFrameStateBuffer destinationOffset:0
+                           size:_indirectFrameStateBuffer.length];
+
+    [blitEncoder endEncoding];
+
     // Obtain a renderPassDescriptor generated from the view's drawable textures
     MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
 
     // If we've gotten a renderPassDescriptor we can render to the drawable, otherwise we'll skip
     //   any rendering this frame because we have no drawable to draw to
-    if(renderPassDescriptor != nil) {
-        renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
-        renderPassDescriptor.depthAttachment.clearDepth = _currentDepth;
-
+    if(renderPassDescriptor != nil)
+    {
         // Create a render command encoder so we can render into something
         id <MTLRenderCommandEncoder> renderEncoder =
-        [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-        renderEncoder.label = @"MyRenderEncoder";
+            [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+        renderEncoder.label = @"Main Render Encoder";
 
-        [renderEncoder setCullMode:MTLCullModeNone];
-
-        // Push a debug group allowing us to identify render commands in the GPU Frame Capture tool
-        [renderEncoder pushDebugGroup:@"DrawShapes"];
-
-        // Set render command encoder state
         [renderEncoder setCullMode:MTLCullModeBack];
-        [renderEncoder setRenderPipelineState:_pipelineState];
-        [renderEncoder setDepthStencilState:_depthState];
-        [renderEncoder useResource:_uniformBuffers usage:MTLResourceUsageRead];
-        for (int indx = 0; indx < AAPLNumShapes; indx++)
+
+        [renderEncoder setRenderPipelineState:_renderPipelineState];
+
+        // Make a useResource call for each buffer needed by the indirect command buffer.
+        for (int i = 0; i < AAPLNumObjects; i++)
         {
-            [renderEncoder useResource:_vertexBuffer[indx] usage:MTLResourceUsageRead];
+            [renderEncoder useResource:_vertexBuffer[i] usage:MTLResourceUsageRead];
         }
 
-        // Draw everything in the ICB.
-        // CPU encoding: all commands are encoded with a draw, but only 1 draw can pass depth test.
-        // GPU encoding: Only 1 command is encoded in the indirect command buffer.
-        [renderEncoder executeCommandsInBuffer:_icb withRange:NSMakeRange(0, AAPLNumShapes)];
+        [renderEncoder useResource:_objectParameters usage:MTLResourceUsageRead];
 
-        _currentFrameID ++;
-        if ((_currentFrameID % AAPLNumShapes) == 0)
-        {
-            _currentFrameIndex = (_currentFrameIndex + 1) % AAPLNumShapes;
-        }
+        [renderEncoder useResource:_indirectFrameStateBuffer usage:MTLResourceUsageRead];
 
-        [renderEncoder popDebugGroup];
+        // Draw everything in the indirect command buffer.
+        [renderEncoder executeCommandsInBuffer:_indirectCommandBuffer withRange:NSMakeRange(0, AAPLNumObjects)];
 
         // We're done encoding commands
         [renderEncoder endEncoding];
