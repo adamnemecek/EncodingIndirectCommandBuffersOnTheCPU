@@ -23,9 +23,9 @@ typedef struct
 vertex RasterizerData
 vertexShader(uint                         vertexID      [[ vertex_id ]],
              uint                         objectIndex   [[ instance_id ]],
-             device AAPLVertex           *vertices      [[ buffer(AAPLVertexBufferIndexVertices) ]],
-             device AAPLObjectPerameters *object_params [[ buffer(AAPLVertexBufferIndexObjectParams) ]],
-             constant AAPLFrameState     *frame_state   [[ buffer(AAPLVertexBufferIndexFrameState) ]])
+             const device AAPLVertex *    vertices      [[ buffer(AAPLVertexBufferIndexVertices) ]],
+             const device AAPLObjectPerameters* object_params [[ buffer(AAPLVertexBufferIndexObjectParams) ]],
+             constant AAPLFrameState *    frame_state   [[ buffer(AAPLVertexBufferIndexFrameState) ]])
 {
     RasterizerData out;
 

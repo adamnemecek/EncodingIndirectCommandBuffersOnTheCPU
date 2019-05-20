@@ -68,21 +68,28 @@ The sample also allows `_indirectCommandBuffer` to inherit the render pipeline s
 The sample creates `_indirectCommandBuffer` from a `MTLIndirectCommandBufferDescriptor`, which defines the features and limits of an indirect command buffer.
 
 ``` objective-c
-MTLIndirectCommandBufferDescriptor* icbDescriptor = [MTLIndirectCommandBufferDescriptor new];
+        MTLIndirectCommandBufferDescriptor* icbDescriptor = [MTLIndirectCommandBufferDescriptor new];
 
-// Indicate that the only draw commands will be standard (non-indexed) draw commands.
-icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
+        // Indicate that the only draw commands will be standard (non-indexed) draw commands.
+        icbDescriptor.commandTypes = MTLIndirectCommandTypeDraw;
 
-// Indicate that buffers will be set for each command IN the indirect command buffer.
-icbDescriptor.inheritBuffers = NO;
+        // Indicate that buffers will be set for each command IN the indirect command buffer.
+        icbDescriptor.inheritBuffers = NO;
 
-// Indicate that a max of 3 buffers will be set for each command.
-icbDescriptor.maxVertexBufferBindCount = 3;
-icbDescriptor.maxFragmentBufferBindCount = 0;
+        // Indicate that a max of 3 buffers will be set for each command.
+        icbDescriptor.maxVertexBufferBindCount = 3;
+        icbDescriptor.maxFragmentBufferBindCount = 0;
 
-_indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
-                                                         maxCommandCount:AAPLNumObjects
-                                                                 options:0];
+#ifdef TARGET_MACOS
+        // Indicate that the render pipeline state object will be set in the render command encoder
+        // (not by the indirect command buffer).
+        // Only macOS devices support pipeline inheritance with ICBs and have this property.
+        icbDescriptor.inheritPipelineState = YES;
+#endif
+
+        _indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
+                                                                 maxCommandCount:AAPLNumObjects
+                                                                         options:0];
 ```
 
 The sample specifies the types of commands, `commandTypes`, and the maximum number of commands, `maxCount`, so that Metal reserves enough space in memory for the sample to encode `_indirectCommandBuffer` successfully (with the CPU or GPU).
@@ -126,7 +133,7 @@ The sample performs this encoding only once, before encoding any subsequent rend
 
 ## Update the Data Used by an ICB
 
-To update data that's fed to the GPU, you typically cycle through a set of buffers such that the CPU updates one while the GPU reads another (see [CPU and GPU Synchronization](https://developer.apple.com/documentation/metal/advanced_command_setup/cpu_and_gpu_synchronization)). You can't apply that pattern literally with ICBs, however, because you can't update an ICB's buffer set after you encode its commands, but you follow a two-step process to blit data updates from the CPU. First, update a single buffer in your dynamic buffer array on the CPU: 
+To update data that's fed to the GPU, you typically cycle through a set of buffers such that the CPU updates one while the GPU reads another (see [CPU and GPU Synchronization](https://developer.apple.com/documentation/metal/synchronization/synchronizing_cpu_and_gpu_work)). You can't apply that pattern literally with ICBs, however, because you can't update an ICB's buffer set after you encode its commands, but you follow a two-step process to blit data updates from the CPU. First, update a single buffer in your dynamic buffer array on the CPU: 
 
 ``` objective-c
 _frameNumber++;

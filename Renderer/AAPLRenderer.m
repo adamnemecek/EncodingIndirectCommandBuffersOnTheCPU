@@ -12,9 +12,6 @@ Implementation of renderer class which performs Metal setup and per frame render
 // Include header shared between C code here, which executes Metal API commands, and .metal files
 #import "AAPLShaderTypes.h"
 
-#define USE_HEAP 1
-#define MOVE_GRID 1
-
 // The max number of command buffers in flight
 static const NSUInteger AAPLMaxBuffersInFlight = 3;
 
@@ -53,7 +50,6 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     id<MTLIndirectCommandBuffer> _indirectCommandBuffer;
 
     vector_float2 _aspectScale;
-
 }
 
 /// Initialize with the MetalKit view from which we'll obtain our Metal device.  We'll also use this
@@ -65,7 +61,6 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     if(self)
     {
         mtkView.clearColor = MTLClearColorMake(0.0, 0.0, 0.5, 1.0f);
-        mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
 
         _device = mtkView.device;
 
@@ -74,17 +69,12 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         // Create the command queue
         _commandQueue = [_device newCommandQueue];
 
-        // Load all the shader files with a metal file extension in the project
+        // Load the shaders from default library
         id <MTLLibrary> defaultLibrary = [_device newDefaultLibrary];
-
-        // Load the vertex function into the library
         id <MTLFunction> vertexFunction = [defaultLibrary newFunctionWithName:@"vertexShader"];
-
-        // Load the fragment function into the library
         id <MTLFunction> fragmentFunction = [defaultLibrary newFunctionWithName:@"fragmentShader"];
 
         mtkView.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
-        mtkView.colorPixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
         mtkView.sampleCount = 1;
 
         // Create a reusable pipeline state
@@ -100,10 +90,8 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 
         NSError *error = nil;
         _renderPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
-        if (!_renderPipelineState)
-        {
-            NSLog(@"Failed to created pipeline state, error %@", error);
-        }
+
+        NSAssert(_renderPipelineState, @"Failed to created pipeline state: %@", error);
 
         for(int objectIdx = 0; objectIdx < AAPLNumObjects; objectIdx++)
         {
@@ -144,7 +132,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         for(int i = 0; i < AAPLMaxBuffersInFlight; i++)
         {
             _frameStateBuffer[i] = [_device newBufferWithLength:sizeof(AAPLFrameState)
-                                                                  options:MTLResourceStorageModeShared];
+                                                        options:MTLResourceStorageModeShared];
 
             _frameStateBuffer[i].label = [NSString stringWithFormat:@"frame state buffer %d", i];
         }
@@ -169,6 +157,13 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         // Indicate that a max of 3 buffers will be set for each command.
         icbDescriptor.maxVertexBufferBindCount = 3;
         icbDescriptor.maxFragmentBufferBindCount = 0;
+
+#ifdef TARGET_MACOS
+        // Indicate that the render pipeline state object will be set in the render command encoder
+        // (not by the indirect command buffer).
+        // Only macOS devices support pipeline inheritance with ICBs and have this property.
+        icbDescriptor.inheritPipelineState = YES;
+#endif
 
         _indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
                                                                  maxCommandCount:AAPLNumObjects
@@ -208,7 +203,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 /// Create a Metal buffer containing a 2D "gear" mesh
 - (id<MTLBuffer>)newGearMeshWithNumTeeth:(uint32_t)numTeeth
 {
-    assert(numTeeth >= 3);
+    NSAssert(numTeeth >= 3, @"Can only build a gear with at least 3 teeth");
 
     static const float innerRatio = 0.8;
     static const float toothWidth = 0.25;
@@ -267,7 +262,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         meshVertices[vtx].texcoord = (groove2 + 1.0) / 2.0;
         vtx++;
 
-        // Slice inside tooth
+        // Slice of circle inside tooth
         meshVertices[vtx].position = origin;
         meshVertices[vtx].texcoord = (origin + 1.0) / 2.0;
         vtx++;
@@ -280,7 +275,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         meshVertices[vtx].texcoord = (groove2 + 1.0) / 2.0;
         vtx++;
 
-        // Slice inside groove
+        // Slice of circle inside groove
         meshVertices[vtx].position = origin;
         meshVertices[vtx].texcoord = (origin + 1.0) / 2.0;
         vtx++;

@@ -18,7 +18,7 @@ Application entry point for all platforms
 int main(int argc, char * argv[]) {
 
 #if TARGET_OS_SIMULATOR
-#error No simulator support for Metal API.  Must build for a device
+#error This sample does not have simulator support and must be built for a device.
 #endif
 
     @autoreleasepool {
