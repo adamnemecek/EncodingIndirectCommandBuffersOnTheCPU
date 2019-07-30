@@ -14,7 +14,7 @@ An example of where ICBs are effective is with a game’s head-up display (HUD),
 
 ICBs are also useful to render static objects in typical 3D scenes. Because encoded commands typically result in lightweight data structures, ICBs are suitable for saving complex draws, too.  
 
-This sample demonstrates how to set up an ICB to repeatedly render a series of shapes. While it's possible to gain even more instruction-parallelism by encoding the ICB on the GPU, this sample encodes an ICB on the CPU for simplicity. See [Encoding Indirect Command Buffers on the GPU](https://developer.apple.com/documentation/metal/advanced_command_setup/encoding_indirect_command_buffers_on_the_gpu) for the more advanced usage. 
+This sample demonstrates how to set up an ICB to repeatedly render a series of shapes. While it's possible to gain even more instruction-parallelism by encoding the ICB on the GPU, this sample encodes an ICB on the CPU for simplicity. See [Encoding Indirect Command Buffers on the GPU](https://developer.apple.com/documentation/metal/indirect_command_buffers/encoding_indirect_command_buffers_on_the_gpu) for the more advanced usage. 
 
 ## Getting Started
 
@@ -80,11 +80,14 @@ The sample creates `_indirectCommandBuffer` from a `MTLIndirectCommandBufferDesc
         icbDescriptor.maxVertexBufferBindCount = 3;
         icbDescriptor.maxFragmentBufferBindCount = 0;
 
-#ifdef TARGET_MACOS
+#if defined TARGET_MACOS || defined(__IPHONE_13_0)
         // Indicate that the render pipeline state object will be set in the render command encoder
         // (not by the indirect command buffer).
-        // Only macOS devices support pipeline inheritance with ICBs and have this property.
-        icbDescriptor.inheritPipelineState = YES;
+        // On iOS, this property only exists on iOS 13 and later.  It defaults to YES in earlier
+        // versions
+        if (@available(iOS 13.0, *)) {
+            icbDescriptor.inheritPipelineState = YES;
+        }
 #endif
 
         _indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
@@ -138,7 +141,7 @@ To update data that's fed to the GPU, you typically cycle through a set of buffe
 ``` objective-c
 _frameNumber++;
 
-_inFlightIndex = _frameNumber % AAPLMaxBuffersInFlight;
+_inFlightIndex = _frameNumber % AAPLMaxFramesInFlight;
 
 AAPLFrameState * frameState = _frameStateBuffer[_inFlightIndex].contents;
 ```

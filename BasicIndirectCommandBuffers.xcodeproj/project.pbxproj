@@ -39,8 +39,6 @@
 		632C07D820B34A8A00F87C9B /* AAPLViewController.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = AAPLViewController.m; sourceTree = "<group>"; };
 		635A5D5920C85BB900A91F0D /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		63DE351F20B48CDD0059E4C5 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
-		64CC0FA064CC681000000001 /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
-		64CF709064CE771000000001 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; path = LICENSE.txt; sourceTree = "<group>"; };
 		720AC48520B8EC1900098002 /* BasicIndirectCommandBuffers.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BasicIndirectCommandBuffers.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		720AC4AD20B8FE2A00098002 /* BasicIndirectCommandBuffers.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BasicIndirectCommandBuffers.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		728A648420A50BB200693E0A /* AAPLRenderer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AAPLRenderer.h; sourceTree = "<group>"; };
@@ -49,6 +47,8 @@
 		728A648720A50BB200693E0A /* AAPLShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = AAPLShaders.metal; sourceTree = "<group>"; };
 		728A64AB20A532BD00693E0A /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.0.Internal.sdk/System/Library/Frameworks/MetalKit.framework; sourceTree = DEVELOPER_DIR; };
 		728A64AC20A532BD00693E0A /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.0.Internal.sdk/System/Library/Frameworks/Metal.framework; sourceTree = DEVELOPER_DIR; };
+		F8C97400F8C8C63000000001 /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
+		F8E898B0F8E7BCE000000001 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; path = LICENSE.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,23 +106,6 @@
 			path = iOS;
 			sourceTree = "<group>";
 		};
-		64CC0E7064CC155000000001 /* Configuration */ = {
-			isa = PBXGroup;
-			children = (
-				64CC0FA064CC681000000001 /* SampleCode.xcconfig */,
-			);
-			name = Configuration;
-			sourceTree = "<group>";
-		};
-		64CF1F2066606AA000000001 /* LICENSE */ = {
-			isa = PBXGroup;
-			children = (
-				64CF709064CE771000000001 /* LICENSE.txt */,
-			);
-			name = LICENSE;
-			path = LICENSE;
-			sourceTree = "<group>";
-		};
 		728A647C20A50BB200693E0A = {
 			isa = PBXGroup;
 			children = (
@@ -131,8 +114,8 @@
 				632C07AE20B34A4600F87C9B /* Application */,
 				728A648F20A50BB200693E0A /* Products */,
 				728A64AA20A532BD00693E0A /* Frameworks */,
-				64CC0E7064CC155000000001 /* Configuration */,
-				64CF1F2066606AA000000001 /* LICENSE */,
+				F8C93CA0F8C93C6000000001 /* Configuration */,
+				F8E79E60F8E775F000000001 /* LICENSE */,
 			);
 			sourceTree = "<group>";
 		};
@@ -163,6 +146,23 @@
 				728A64AB20A532BD00693E0A /* MetalKit.framework */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		F8C93CA0F8C93C6000000001 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				F8C97400F8C8C63000000001 /* SampleCode.xcconfig */,
+			);
+			name = Configuration;
+			sourceTree = "<group>";
+		};
+		F8E79E60F8E775F000000001 /* LICENSE */ = {
+			isa = PBXGroup;
+			children = (
+				F8E898B0F8E7BCE000000001 /* LICENSE.txt */,
+			);
+			name = LICENSE;
+			path = LICENSE;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -310,7 +310,7 @@
 /* Begin XCBuildConfiguration section */
 		720AC48320B8EC1900098002 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
@@ -338,7 +338,7 @@
 		};
 		720AC48420B8EC1900098002 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
 				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
@@ -362,7 +362,7 @@
 		};
 		720AC4AB20B8FE2A00098002 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
@@ -392,7 +392,7 @@
 		};
 		720AC4AC20B8FE2A00098002 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
@@ -422,7 +422,7 @@
 		};
 		728A64A520A50BB200693E0A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -480,7 +480,7 @@
 		};
 		728A64A620A50BB200693E0A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 64CC0FA064CC681000000001 /* SampleCode.xcconfig */;
+			baseConfigurationReference = F8C97400F8C8C63000000001 /* SampleCode.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

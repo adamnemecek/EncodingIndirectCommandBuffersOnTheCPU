@@ -12,8 +12,8 @@ Implementation of renderer class which performs Metal setup and per frame render
 // Include header shared between C code here, which executes Metal API commands, and .metal files
 #import "AAPLShaderTypes.h"
 
-// The max number of command buffers in flight
-static const NSUInteger AAPLMaxBuffersInFlight = 3;
+// The max number of frames in flight
+static const NSUInteger AAPLMaxFramesInFlight = 3;
 
 // Main class performing the rendering
 @implementation AAPLRenderer
@@ -31,7 +31,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
     id<MTLBuffer> _objectParameters;
 
     // The Metal buffers storing per frame uniform data
-    id<MTLBuffer> _frameStateBuffer[AAPLMaxBuffersInFlight];
+    id<MTLBuffer> _frameStateBuffer[AAPLMaxFramesInFlight];
 
     // Render pipeline executinng indirect command buffer
     id<MTLRenderPipelineState> _renderPipelineState;
@@ -64,7 +64,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 
         _device = mtkView.device;
 
-        _inFlightSemaphore = dispatch_semaphore_create(AAPLMaxBuffersInFlight);
+        _inFlightSemaphore = dispatch_semaphore_create(AAPLMaxFramesInFlight);
 
         // Create the command queue
         _commandQueue = [_device newCommandQueue];
@@ -91,7 +91,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         NSError *error = nil;
         _renderPipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
 
-        NSAssert(_renderPipelineState, @"Failed to created pipeline state: %@", error);
+        NSAssert(_renderPipelineState, @"Failed to create pipeline state: %@", error);
 
         for(int objectIdx = 0; objectIdx < AAPLNumObjects; objectIdx++)
         {
@@ -129,7 +129,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
             params[objectIdx].position = position;
         }
 
-        for(int i = 0; i < AAPLMaxBuffersInFlight; i++)
+        for(int i = 0; i < AAPLMaxFramesInFlight; i++)
         {
             _frameStateBuffer[i] = [_device newBufferWithLength:sizeof(AAPLFrameState)
                                                         options:MTLResourceStorageModeShared];
@@ -158,11 +158,14 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
         icbDescriptor.maxVertexBufferBindCount = 3;
         icbDescriptor.maxFragmentBufferBindCount = 0;
 
-#ifdef TARGET_MACOS
+#if defined TARGET_MACOS || defined(__IPHONE_13_0)
         // Indicate that the render pipeline state object will be set in the render command encoder
         // (not by the indirect command buffer).
-        // Only macOS devices support pipeline inheritance with ICBs and have this property.
-        icbDescriptor.inheritPipelineState = YES;
+        // On iOS, this property only exists on iOS 13 and later.  It defaults to YES in earlier
+        // versions
+        if (@available(iOS 13.0, *)) {
+            icbDescriptor.inheritPipelineState = YES;
+        }
 #endif
 
         _indirectCommandBuffer = [_device newIndirectCommandBufferWithDescriptor:icbDescriptor
@@ -298,7 +301,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 {
     _frameNumber++;
 
-    _inFlightIndex = _frameNumber % AAPLMaxBuffersInFlight;
+    _inFlightIndex = _frameNumber % AAPLMaxFramesInFlight;
 
     AAPLFrameState * frameState = _frameStateBuffer[_inFlightIndex].contents;
 
@@ -318,7 +321,7 @@ static const NSUInteger AAPLMaxBuffersInFlight = 3;
 /// Called whenever the view needs to render
 - (void) drawInMTKView:(nonnull MTKView *)view
 {
-    // Wait to ensure only AAPLMaxBuffersInFlight are getting processed by any stage in the Metal
+    // Wait to ensure only AAPLMaxFramesInFlight are getting processed by any stage in the Metal
     //   pipeline (App, Metal, Drivers, GPU, etc)
     dispatch_semaphore_wait(_inFlightSemaphore, DISPATCH_TIME_FOREVER);
 
